@@ -1,6 +1,6 @@
 {
   "name": "@bopen-io/tortuga-plugin",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "private": false,
   "description": "bOpen agent fleet bridge: syncs agents from ClawNet registry, exposes skills as tools, fleet monitoring, webhook integrations",
@@ -12,6 +12,10 @@
     "test": "vitest run --config ./vitest.config.ts",
     "typecheck": "tsc --noEmit"
   },
+  "files": [
+    "dist",
+    "package.json"
+  ],
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
     "worker": "./dist/worker.js",
