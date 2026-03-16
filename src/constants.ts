@@ -21,3 +21,22 @@ export const JOB_KEYS = {
 export const STREAM_CHANNELS = {
   fleetStatus: "fleet-status",
 } as const;
+
+export const DATA_KEYS = {
+  fleetOverview: "fleet-overview",
+  agentDetail: "agent-detail",
+} as const;
+
+export const ACTION_KEYS = {
+  pauseAgent: "pause-agent",
+  resumeAgent: "resume-agent",
+  invokeAgent: "invoke-agent",
+} as const;
+
+export const STATE_KEYS = {
+  agentHealth: "agent-health",
+  lastHealthCheck: "last-health-check",
+  runCount: "run-count",
+  lastRunAt: "last-run-at",
+  failureCount: "failure-count",
+} as const;

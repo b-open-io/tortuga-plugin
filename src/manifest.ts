@@ -23,6 +23,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "agents.pause",
     "agents.resume",
     "agents.invoke",
+    // Company discovery for fleet-wide health checks
+    "companies.read",
     // Plugin state for fleet data
     "plugin.state.read",
     "plugin.state.write",
