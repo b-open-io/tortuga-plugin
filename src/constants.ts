@@ -1,5 +1,6 @@
 export const PLUGIN_ID = "bopen-io.tortuga-plugin";
-export const PLUGIN_VERSION = "0.0.3";
+declare const __PLUGIN_VERSION__: string;
+export const PLUGIN_VERSION = __PLUGIN_VERSION__;
 export const PAGE_ROUTE = "tortuga";
 
 export const SLOT_IDS = {
