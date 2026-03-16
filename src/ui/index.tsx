@@ -69,7 +69,7 @@ function FleetStreamConnector({
   companyId: string | undefined;
   onUpdate: (data: SafeStreamData<FleetStatusEvent>) => void;
 }) {
-  const stream = usePluginStream<FleetStatusEvent>("fleet-status", {
+  const stream = usePluginStream<FleetStatusEvent>("tortuga:fleet-status", {
     companyId,
   });
 
@@ -697,14 +697,12 @@ function AgentRow({
   onSelect,
   onPause,
   onResume,
-  onInvoke,
   actionLoading,
 }: {
   agent: FleetAgent;
   onSelect: () => void;
   onPause: () => void;
   onResume: () => void;
-  onInvoke: () => void;
   actionLoading: boolean;
 }) {
   return (
@@ -783,9 +781,9 @@ function AgentRow({
         <button
           type="button"
           style={primaryButtonStyle}
-          onClick={onInvoke}
+          onClick={onSelect}
           disabled={actionLoading || agent.status === "paused" || agent.status === "terminated"}
-          title="Invoke agent"
+          title="Invoke agent (opens detail panel)"
         >
           Invoke
         </button>
@@ -870,11 +868,11 @@ function AgentDetailPanel({
         </div>
       </div>
 
-      {/* Run counts */}
+      {/* Run counts + budget */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(3, 1fr)",
+          gridTemplateColumns: "repeat(auto-fit, minmax(100px, 1fr))",
           gap: "12px",
         }}
       >
@@ -889,6 +887,14 @@ function AgentDetailPanel({
         <div style={subtleCardStyle}>
           <div style={statValueStyle}>{detail.runCounts.failed}</div>
           <div style={statLabelStyle}>Failed</div>
+        </div>
+        <div style={subtleCardStyle}>
+          <div style={statValueStyle}>${(detail.spentMonthlyCents / 100).toFixed(2)}</div>
+          <div style={statLabelStyle}>Spent</div>
+        </div>
+        <div style={subtleCardStyle}>
+          <div style={statValueStyle}>${(detail.budgetMonthlyCents / 100).toFixed(2)}</div>
+          <div style={statLabelStyle}>Budget</div>
         </div>
       </div>
 
@@ -1184,7 +1190,6 @@ export function FleetMonitorPage({ context }: PluginPageProps) {
               onSelect={() => setDetailView({ agentId: agent.id })}
               onPause={() => void handlePause(agent.id)}
               onResume={() => void handleResume(agent.id)}
-              onInvoke={() => void handleInvoke(agent.id)}
               actionLoading={actionLoading}
             />
           ))}

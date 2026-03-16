@@ -39,8 +39,6 @@ export const STATE_KEYS = {
   agentHealth: "health",
   /** Instance-level: last fleet health check timestamp */
   lastHealthCheck: "last-health-check",
-  /** Per-agent last-run timestamp */
-  lastRun: "last-run",
   /** Per-agent run counters: started, completed, failed */
   runCounts: "run-counts",
 } as const;
