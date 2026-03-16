@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.7
+
+### Fixed
+
+- Fix "undefined agents registered" — UI was reading `overview.total` instead of `overview.totalAgents`
+
 ## 0.0.6
 
 ### Fixed
