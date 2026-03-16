@@ -1011,7 +1011,7 @@ export function FleetMonitorPage({ context }: PluginPageProps) {
           </h1>
           <div style={mutedTextStyle}>
             {overview
-              ? `${overview.total} agent${overview.total === 1 ? "" : "s"} registered. Last health check: ${relativeTime(overview.lastHealthCheck)}`
+              ? `${overview.totalAgents} agent${overview.totalAgents === 1 ? "" : "s"} registered. Last health check: ${relativeTime(overview.lastHealthCheck)}`
               : "Loading fleet data..."}
           </div>
         </div>
@@ -1101,7 +1101,7 @@ export function TortugaSidebarLink({ context }: PluginSidebarProps) {
   const isActive =
     typeof window !== "undefined" && window.location.pathname === href;
 
-  const agentCount = overview?.total ?? 0;
+  const agentCount = overview?.totalAgents ?? 0;
 
   return (
     <a
