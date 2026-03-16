@@ -30,9 +30,12 @@ type FleetAgent = {
 };
 
 type FleetOverview = {
-  agents: FleetAgent[];
-  total: number;
-  lastHealthCheck: string | null;
+  fleet: FleetAgent[];
+  totalAgents: number;
+  healthy: number;
+  degraded: number;
+  error: number;
+  lastHealthCheckAt: string | null;
 };
 
 type AgentDetailData = {
@@ -422,7 +425,7 @@ export function FleetStatusWidget({ context }: PluginWidgetProps) {
 
   // Apply live status updates on top of fetched data
   const agents = useMemo(() => {
-    const base = overview?.agents ?? [];
+    const base = overview?.fleet ?? [];
     if (fleetStream.events.length === 0) return base;
 
     // Build latest status map from stream events
@@ -435,7 +438,7 @@ export function FleetStatusWidget({ context }: PluginWidgetProps) {
       const liveStatus = latestStatus.get(agent.id);
       return liveStatus ? { ...agent, status: liveStatus } : agent;
     });
-  }, [overview?.agents, fleetStream.events]);
+  }, [overview?.fleet, fleetStream.events]);
 
   if (loading) return <LoadingIndicator message="Loading fleet status..." />;
   if (error) return <ErrorBanner message={error.message} />;
@@ -875,7 +878,7 @@ export function FleetMonitorPage({ context }: PluginPageProps) {
 
   // Apply live status updates
   const agents = useMemo(() => {
-    const base = overview?.agents ?? [];
+    const base = overview?.fleet ?? [];
     if (fleetStream.events.length === 0) return base;
 
     const latestStatus = new Map<string, AgentStatus>();
@@ -887,7 +890,7 @@ export function FleetMonitorPage({ context }: PluginPageProps) {
       const liveStatus = latestStatus.get(agent.id);
       return liveStatus ? { ...agent, status: liveStatus } : agent;
     });
-  }, [overview?.agents, fleetStream.events]);
+  }, [overview?.fleet, fleetStream.events]);
 
   // Filter
   const filteredAgents = useMemo(() => {
@@ -1011,7 +1014,7 @@ export function FleetMonitorPage({ context }: PluginPageProps) {
           </h1>
           <div style={mutedTextStyle}>
             {overview
-              ? `${overview.totalAgents} agent${overview.totalAgents === 1 ? "" : "s"} registered. Last health check: ${relativeTime(overview.lastHealthCheck)}`
+              ? `${overview.totalAgents} agent${overview.totalAgents === 1 ? "" : "s"} registered. Last health check: ${relativeTime(overview.lastHealthCheckAt)}`
               : "Loading fleet data..."}
           </div>
         </div>
