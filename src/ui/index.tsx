@@ -1,4 +1,13 @@
-import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  Component,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type ErrorInfo,
+  type ReactNode,
+} from "react";
 import {
   usePluginAction,
   usePluginData,
@@ -10,6 +19,94 @@ import type {
   PluginSidebarProps,
   PluginWidgetProps,
 } from "@paperclipai/plugin-sdk/ui";
+
+// ---------------------------------------------------------------------------
+// Stream safety — isolate usePluginStream behind an error boundary so that
+// a 501 (stream bus not wired up) or any other SSE failure does not crash
+// the entire plugin component. Data from usePluginData remains the primary
+// source; stream data is a live overlay when available.
+// ---------------------------------------------------------------------------
+
+type SafeStreamData<T> = { events: T[]; connected: boolean };
+
+const EMPTY_STREAM_DATA: SafeStreamData<never> = { events: [], connected: false };
+
+/**
+ * Error boundary that silently swallows stream-related render errors.
+ * When the wrapped child (which calls usePluginStream) throws, this
+ * boundary catches the error and renders nothing — the parent component
+ * continues to function using usePluginData results.
+ */
+class StreamErrorBoundary extends Component<
+  { children: ReactNode },
+  { hasError: boolean }
+> {
+  override state = { hasError: false };
+
+  static getDerivedStateFromError(): { hasError: boolean } {
+    return { hasError: true };
+  }
+
+  override componentDidCatch(error: unknown, info: ErrorInfo): void {
+    console.warn("[tortuga] stream error caught, degrading gracefully:", error, info.componentStack);
+  }
+
+  override render() {
+    if (this.state.hasError) return null;
+    return this.props.children;
+  }
+}
+
+/**
+ * Thin component that calls usePluginStream and reports results to the
+ * parent via a stable callback. Rendered inside StreamErrorBoundary so
+ * that any error from the hook is caught without crashing the parent.
+ */
+function FleetStreamConnector({
+  companyId,
+  onUpdate,
+}: {
+  companyId: string | undefined;
+  onUpdate: (data: SafeStreamData<FleetStatusEvent>) => void;
+}) {
+  const stream = usePluginStream<FleetStatusEvent>("fleet-status", {
+    companyId,
+  });
+
+  useEffect(() => {
+    onUpdate({ events: stream.events, connected: stream.connected });
+  }, [stream.events, stream.connected, onUpdate]);
+
+  return null;
+}
+
+/**
+ * Hook that provides fleet stream data safely. Returns a stable empty
+ * result until the stream connector reports data, and degrades to the
+ * empty result if the stream connector crashes.
+ */
+function useSafeFleetStream(companyId: string | null | undefined): {
+  streamData: SafeStreamData<FleetStatusEvent>;
+  StreamConnectorElement: ReactNode;
+} {
+  const [streamData, setStreamData] = useState<SafeStreamData<FleetStatusEvent>>(
+    EMPTY_STREAM_DATA as SafeStreamData<FleetStatusEvent>,
+  );
+
+  const handleUpdate = useCallback((data: SafeStreamData<FleetStatusEvent>) => {
+    setStreamData(data);
+  }, []);
+
+  const effectiveCompanyId = companyId ?? undefined;
+
+  const element = (
+    <StreamErrorBoundary>
+      <FleetStreamConnector companyId={effectiveCompanyId} onUpdate={handleUpdate} />
+    </StreamErrorBoundary>
+  );
+
+  return { streamData, StreamConnectorElement: element };
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -459,9 +556,7 @@ export function FleetStatusWidget({ context }: PluginWidgetProps) {
     overviewParams,
   );
 
-  const fleetStream = usePluginStream<FleetStatusEvent>("fleet-status", {
-    companyId: companyId ?? undefined,
-  });
+  const { streamData: fleetStream, StreamConnectorElement } = useSafeFleetStream(companyId);
 
   // Apply live status updates on top of fetched data
   const agents = useMemo(() => {
@@ -490,6 +585,7 @@ export function FleetStatusWidget({ context }: PluginWidgetProps) {
 
   return (
     <div style={layoutStack}>
+      {StreamConnectorElement}
       <div style={rowStyle}>
         <strong>Fleet Status</strong>
         {fleetStream.connected ? <StatusDot status="online" /> : null}
@@ -875,10 +971,8 @@ export function FleetMonitorPage({ context }: PluginPageProps) {
     refresh,
   } = usePluginData<FleetOverview>("fleet-overview", overviewParams);
 
-  // Stream
-  const fleetStream = usePluginStream<FleetStatusEvent>("fleet-status", {
-    companyId: companyId ?? undefined,
-  });
+  // Stream (isolated behind error boundary — degrades gracefully on 501)
+  const { streamData: fleetStream, StreamConnectorElement } = useSafeFleetStream(companyId);
 
   // Actions
   const pauseAgent = usePluginAction("pause-agent");
@@ -1015,6 +1109,7 @@ export function FleetMonitorPage({ context }: PluginPageProps) {
 
   return (
     <div style={layoutStack}>
+      {StreamConnectorElement}
       {/* Page header */}
       <div
         style={{
