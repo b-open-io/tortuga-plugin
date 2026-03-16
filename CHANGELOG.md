@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.8
+
+### Fixed
+
+- Fix FleetOverview type to match worker response (fleet, totalAgents, lastHealthCheckAt fields)
+
 ## 0.0.7
 
 ### Fixed
