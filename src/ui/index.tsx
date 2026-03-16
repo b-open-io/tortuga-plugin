@@ -15,44 +15,88 @@ import type {
 // Types
 // ---------------------------------------------------------------------------
 
-type AgentStatus = "running" | "idle" | "error" | "paused" | "offline";
+/**
+ * Agent status values matching `Agent["status"]` from `@paperclipai/plugin-sdk`.
+ *
+ * The SDK `Agent` type is not re-exported on the `@paperclipai/plugin-sdk/ui`
+ * subpath, so we replicate the union here. Keep in sync with:
+ *   `@paperclipai/shared` -> `AGENT_STATUSES`
+ */
+type AgentStatus =
+  | "active"
+  | "paused"
+  | "idle"
+  | "running"
+  | "error"
+  | "pending_approval"
+  | "terminated";
 
+/**
+ * UI projection of the SDK `Agent` type, shaped by the worker's `fleet-overview`
+ * data handler. Field names and types mirror their `Agent` counterparts where
+ * applicable. Fields not present on `Agent` (e.g. `health`, `runCounts`) are
+ * plugin-computed additions.
+ */
 type FleetAgent = {
   id: string;
   name: string;
   role: string | null;
+  title: string | null;
+  icon: string | null;
   status: AgentStatus;
-  lastHeartbeat: string | null;
-  adapterType: string | null;
+  health: "healthy" | "degraded" | "error";
+  lastHeartbeatAt: string | null;
+  budgetMonthlyCents: number;
+  spentMonthlyCents: number;
+  runCounts: { started: number; completed: number; failed: number };
   lastRunAt: string | null;
-  lastRunDurationMs: number | null;
-  lastRunResult: string | null;
 };
 
 type FleetOverview = {
-  fleet: FleetAgent[];
   totalAgents: number;
   healthy: number;
   degraded: number;
   error: number;
   lastHealthCheckAt: string | null;
+  fleet: FleetAgent[];
 };
 
+/**
+ * Agent detail response from the worker's `agent-detail` data handler.
+ *
+ * Fields mirror the SDK `Agent` type, plus plugin-computed health and run data.
+ * This is returned as a flat object (not nested under `agent`).
+ */
 type AgentDetailData = {
-  agent: FleetAgent;
-  recentRuns: {
-    id: string;
-    startedAt: string;
-    durationMs: number;
-    result: string;
-    prompt: string | null;
-  }[];
+  id: string;
+  name: string;
+  role: string | null;
+  title: string | null;
+  icon: string | null;
+  status: AgentStatus;
+  health: "healthy" | "degraded" | "error";
+  reportsTo: string | null;
+  capabilities: string | null;
+  adapterType: string;
+  budgetMonthlyCents: number;
+  spentMonthlyCents: number;
+  lastHeartbeatAt: string | null;
+  runCounts: { started: number; completed: number; failed: number };
+  lastRunAt: string | null;
+  lastCheckedAt: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
 };
 
 type FleetStatusEvent = {
+  type: string;
   agentId: string;
-  status: AgentStatus;
-  timestamp: string;
+  companyId: string;
+  previousStatus: AgentStatus | null;
+  newStatus?: AgentStatus;
+  currentStatus?: AgentStatus;
+  health?: string;
+  occurredAt: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -183,16 +227,6 @@ function relativeTime(isoString: string | null): string {
   return `${days}d ago`;
 }
 
-function formatDuration(ms: number | null): string {
-  if (ms === null) return "--";
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainder = seconds % 60;
-  return `${minutes}m ${remainder}s`;
-}
-
 // ---------------------------------------------------------------------------
 // Small shared primitives
 // ---------------------------------------------------------------------------
@@ -222,11 +256,13 @@ function Pill({ label, color }: { label: string; color?: string }) {
 }
 
 const STATUS_COLORS: Record<string, string> = {
+  active: "#16a34a",
   running: "#2563eb",
   idle: "#d97706",
   error: "#dc2626",
   paused: "#6b7280",
-  offline: "#6b7280",
+  pending_approval: "#d97706",
+  terminated: "#dc2626",
   online: "#16a34a",
 };
 
@@ -318,16 +354,17 @@ function Section({
 
 function statusCounts(agents: FleetAgent[]): Record<AgentStatus, number> {
   const counts: Record<AgentStatus, number> = {
-    running: 0,
-    idle: 0,
-    error: 0,
+    active: 0,
     paused: 0,
-    offline: 0,
+    idle: 0,
+    running: 0,
+    error: 0,
+    pending_approval: 0,
+    terminated: 0,
   };
   for (const agent of agents) {
-    const s = agent.status as AgentStatus;
-    if (s in counts) {
-      counts[s]++;
+    if (agent.status in counts) {
+      counts[agent.status]++;
     }
   }
   return counts;
@@ -336,10 +373,13 @@ function statusCounts(agents: FleetAgent[]): Record<AgentStatus, number> {
 function StatusBreakdown({ agents }: { agents: FleetAgent[] }) {
   const counts = statusCounts(agents);
   const entries: { status: AgentStatus; label: string }[] = [
+    { status: "active", label: "Active" },
     { status: "running", label: "Running" },
     { status: "idle", label: "Idle" },
     { status: "error", label: "Error" },
     { status: "paused", label: "Paused" },
+    { status: "pending_approval", label: "Pending" },
+    { status: "terminated", label: "Terminated" },
   ];
 
   return (
@@ -431,7 +471,10 @@ export function FleetStatusWidget({ context }: PluginWidgetProps) {
     // Build latest status map from stream events
     const latestStatus = new Map<string, AgentStatus>();
     for (const event of fleetStream.events) {
-      latestStatus.set(event.agentId, event.status);
+      const status = event.newStatus ?? event.currentStatus;
+      if (status) {
+        latestStatus.set(event.agentId, status);
+      }
     }
 
     return base.map((agent) => {
@@ -474,7 +517,7 @@ export function FleetStatusWidget({ context }: PluginWidgetProps) {
       <StatusBreakdown agents={agents} />
 
       <div style={{ ...mutedTextStyle, fontSize: "11px" }}>
-        Last health check: {relativeTime(overview?.lastHealthCheck ?? null)}
+        Last health check: {relativeTime(overview?.lastHealthCheckAt ?? null)}
       </div>
 
       <a
@@ -505,6 +548,7 @@ function StatusFilterBar({
 }) {
   const filters: { key: StatusFilter; label: string }[] = [
     { key: "all", label: "All" },
+    { key: "active", label: "Active" },
     { key: "running", label: "Running" },
     { key: "idle", label: "Idle" },
     { key: "error", label: "Error" },
@@ -604,13 +648,11 @@ function AgentRow({
             {agent.name}
           </span>
           {agent.role ? <Pill label={agent.role} /> : null}
-          {agent.adapterType ? (
-            <Pill label={agent.adapterType} color="#6366f1" />
-          ) : null}
+          {agent.title ? <Pill label={agent.title} color="#6366f1" /> : null}
         </div>
         <div style={mutedTextStyle}>
-          Last heartbeat: {relativeTime(agent.lastHeartbeat)}
-          {agent.lastRunResult ? ` \u00b7 Last run: ${agent.lastRunResult}` : ""}
+          Last heartbeat: {relativeTime(agent.lastHeartbeatAt)}
+          {agent.lastRunAt ? ` \u00b7 Last run: ${relativeTime(agent.lastRunAt)}` : ""}
         </div>
       </div>
 
@@ -620,7 +662,7 @@ function AgentRow({
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => e.stopPropagation()}
       >
-        {agent.status === "running" || agent.status === "idle" ? (
+        {agent.status === "active" || agent.status === "running" || agent.status === "idle" ? (
           <button
             type="button"
             style={buttonStyle}
@@ -646,7 +688,7 @@ function AgentRow({
           type="button"
           style={primaryButtonStyle}
           onClick={onInvoke}
-          disabled={actionLoading || agent.status === "paused"}
+          disabled={actionLoading || agent.status === "paused" || agent.status === "terminated"}
           title="Invoke agent"
         >
           Invoke
@@ -686,8 +728,6 @@ function AgentDetailPanel({
   if (error) return <ErrorBanner message={error.message} />;
   if (!detail) return <EmptyState message="Agent not found." />;
 
-  const { agent, recentRuns } = detail;
-
   return (
     <div style={layoutStack}>
       {/* Back + header */}
@@ -695,9 +735,9 @@ function AgentDetailPanel({
         <button type="button" style={buttonStyle} onClick={onBack}>
           Back
         </button>
-        <StatusDot status={agent.status} />
-        <strong style={{ fontSize: "16px" }}>{agent.name}</strong>
-        <Pill label={agent.status} color={STATUS_COLORS[agent.status]} />
+        <StatusDot status={detail.status} />
+        <strong style={{ fontSize: "16px" }}>{detail.name}</strong>
+        <Pill label={detail.status} color={STATUS_COLORS[detail.status]} />
       </div>
 
       {/* Stats grid */}
@@ -711,45 +751,67 @@ function AgentDetailPanel({
         <div style={subtleCardStyle}>
           <div style={eyebrowStyle}>Role</div>
           <div style={{ fontSize: "13px", marginTop: "4px" }}>
-            {agent.role ?? "Not assigned"}
+            {detail.role ?? "Not assigned"}
           </div>
         </div>
         <div style={subtleCardStyle}>
           <div style={eyebrowStyle}>Adapter</div>
           <div style={{ fontSize: "13px", marginTop: "4px" }}>
-            {agent.adapterType ?? "Default"}
+            {detail.adapterType ?? "Default"}
           </div>
         </div>
         <div style={subtleCardStyle}>
           <div style={eyebrowStyle}>Last Heartbeat</div>
           <div style={{ fontSize: "13px", marginTop: "4px" }}>
-            {relativeTime(agent.lastHeartbeat)}
+            {relativeTime(detail.lastHeartbeatAt)}
           </div>
         </div>
         <div style={subtleCardStyle}>
-          <div style={eyebrowStyle}>Last Run Duration</div>
+          <div style={eyebrowStyle}>Last Run</div>
           <div style={{ fontSize: "13px", marginTop: "4px" }}>
-            {formatDuration(agent.lastRunDurationMs)}
+            {relativeTime(detail.lastRunAt)}
           </div>
+        </div>
+      </div>
+
+      {/* Run counts */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(3, 1fr)",
+          gap: "12px",
+        }}
+      >
+        <div style={subtleCardStyle}>
+          <div style={statValueStyle}>{detail.runCounts.started}</div>
+          <div style={statLabelStyle}>Started</div>
+        </div>
+        <div style={subtleCardStyle}>
+          <div style={statValueStyle}>{detail.runCounts.completed}</div>
+          <div style={statLabelStyle}>Completed</div>
+        </div>
+        <div style={subtleCardStyle}>
+          <div style={statValueStyle}>{detail.runCounts.failed}</div>
+          <div style={statLabelStyle}>Failed</div>
         </div>
       </div>
 
       {/* Actions */}
       <div style={rowStyle}>
-        {agent.status === "running" || agent.status === "idle" ? (
+        {detail.status === "active" || detail.status === "running" || detail.status === "idle" ? (
           <button
             type="button"
             style={dangerButtonStyle}
-            onClick={() => onPause(agent.id)}
+            onClick={() => onPause(detail.id)}
           >
             Pause Agent
           </button>
         ) : null}
-        {agent.status === "paused" ? (
+        {detail.status === "paused" ? (
           <button
             type="button"
             style={buttonStyle}
-            onClick={() => onResume(agent.id)}
+            onClick={() => onResume(detail.id)}
           >
             Resume Agent
           </button>
@@ -767,7 +829,7 @@ function AgentDetailPanel({
             style={{ ...inputStyle, flex: 1 }}
             onKeyDown={(e) => {
               if (e.key === "Enter" && invokePrompt.trim()) {
-                onInvoke(agent.id, invokePrompt.trim());
+                onInvoke(detail.id, invokePrompt.trim());
                 setInvokePrompt("");
               }
             }}
@@ -777,63 +839,15 @@ function AgentDetailPanel({
             style={primaryButtonStyle}
             onClick={() => {
               if (invokePrompt.trim()) {
-                onInvoke(agent.id, invokePrompt.trim());
+                onInvoke(detail.id, invokePrompt.trim());
                 setInvokePrompt("");
               }
             }}
-            disabled={!invokePrompt.trim() || agent.status === "paused"}
+            disabled={!invokePrompt.trim() || detail.status === "paused" || detail.status === "terminated"}
           >
             Send
           </button>
         </div>
-      </Section>
-
-      {/* Recent runs */}
-      <Section title="Recent Runs">
-        {recentRuns.length === 0 ? (
-          <EmptyState message="No recent runs recorded." />
-        ) : (
-          <div style={{ display: "grid", gap: "8px" }}>
-            {recentRuns.map((run) => (
-              <div
-                key={run.id}
-                style={{
-                  ...subtleCardStyle,
-                  display: "grid",
-                  gridTemplateColumns: "1fr auto",
-                  gap: "6px",
-                  alignItems: "start",
-                }}
-              >
-                <div style={{ display: "grid", gap: "4px", minWidth: 0 }}>
-                  <div style={{ fontSize: "12px", fontWeight: 600 }}>
-                    {run.result}
-                  </div>
-                  {run.prompt ? (
-                    <div style={{ ...mutedTextStyle, fontSize: "11px" }}>
-                      {run.prompt}
-                    </div>
-                  ) : null}
-                </div>
-                <div
-                  style={{
-                    display: "grid",
-                    gap: "2px",
-                    textAlign: "right",
-                    flexShrink: 0,
-                  }}
-                >
-                  <div style={{ fontSize: "11px", opacity: 0.6 }}>
-                    {relativeTime(run.startedAt)}
-                  </div>
-                  <div style={{ fontSize: "11px", opacity: 0.5 }}>
-                    {formatDuration(run.durationMs)}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
       </Section>
     </div>
   );
@@ -883,7 +897,10 @@ export function FleetMonitorPage({ context }: PluginPageProps) {
 
     const latestStatus = new Map<string, AgentStatus>();
     for (const event of fleetStream.events) {
-      latestStatus.set(event.agentId, event.status);
+      const status = event.newStatus ?? event.currentStatus;
+      if (status) {
+        latestStatus.set(event.agentId, status);
+      }
     }
 
     return base.map((agent) => {
