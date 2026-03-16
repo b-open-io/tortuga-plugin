@@ -8,33 +8,13 @@ import {
   type PluginHealthDiagnostics,
   type Agent,
 } from "@paperclipai/plugin-sdk";
-import { JOB_KEYS, STREAM_CHANNELS } from "./constants.js";
-
-// ---------------------------------------------------------------------------
-// State key constants (scoped to this worker, not exported to UI)
-// ---------------------------------------------------------------------------
-
-const STATE_KEYS = {
-  /** Per-agent health snapshot: status, lastHeartbeat, run counts */
-  agentHealth: "health",
-  /** Per-agent last-run timestamp */
-  lastRun: "last-run",
-  /** Per-agent run counters: started, completed, failed */
-  runCounts: "run-counts",
-  /** Instance-level: last fleet health check timestamp */
-  lastHealthCheck: "last-health-check",
-} as const;
-
-const DATA_KEYS = {
-  fleetOverview: "fleet-overview",
-  agentDetail: "agent-detail",
-} as const;
-
-const ACTION_KEYS = {
-  pauseAgent: "pause-agent",
-  resumeAgent: "resume-agent",
-  invokeAgent: "invoke-agent",
-} as const;
+import {
+  ACTION_KEYS,
+  DATA_KEYS,
+  JOB_KEYS,
+  STATE_KEYS,
+  STREAM_CHANNELS,
+} from "./constants.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -67,7 +47,17 @@ type FleetHealthCheckResult = {
 // ---------------------------------------------------------------------------
 
 let currentContext: PluginContext | null = null;
-const openStreams = new Set<string>();
+
+// Per-agent serialization lock to prevent race conditions on run count updates.
+// Each agent's state mutations are serialized via promise chaining.
+const agentLocks = new Map<string, Promise<void>>();
+
+async function withAgentLock(agentId: string, fn: () => Promise<void>): Promise<void> {
+  const prev = agentLocks.get(agentId) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  agentLocks.set(agentId, next);
+  await next;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -305,17 +295,19 @@ function registerEventHandlers(ctx: PluginContext): void {
     const payload = event.payload as Record<string, unknown>;
     ctx.logger.info("Agent run started", { agentId, runId: payload.runId });
 
-    const counts = await getRunCounts(ctx, agentId);
-    counts.started++;
-    await setRunCounts(ctx, agentId, counts);
+    await withAgentLock(agentId, async () => {
+      const counts = await getRunCounts(ctx, agentId);
+      counts.started++;
+      await setRunCounts(ctx, agentId, counts);
 
-    // Update lastRunAt
-    const healthState = await getAgentHealthState(ctx, agentId);
-    if (healthState) {
-      healthState.lastRunAt = event.occurredAt;
-      healthState.runCounts = counts;
-      await setAgentHealthState(ctx, agentId, healthState);
-    }
+      // Update lastRunAt
+      const healthState = await getAgentHealthState(ctx, agentId);
+      if (healthState) {
+        healthState.lastRunAt = event.occurredAt;
+        healthState.runCounts = counts;
+        await setAgentHealthState(ctx, agentId, healthState);
+      }
+    });
 
     ctx.streams.emit(STREAM_CHANNELS.fleetStatus, {
       type: "run-started",
@@ -334,16 +326,18 @@ function registerEventHandlers(ctx: PluginContext): void {
     const payload = event.payload as Record<string, unknown>;
     ctx.logger.info("Agent run finished", { agentId, runId: payload.runId });
 
-    const counts = await getRunCounts(ctx, agentId);
-    counts.completed++;
-    await setRunCounts(ctx, agentId, counts);
+    await withAgentLock(agentId, async () => {
+      const counts = await getRunCounts(ctx, agentId);
+      counts.completed++;
+      await setRunCounts(ctx, agentId, counts);
 
-    const healthState = await getAgentHealthState(ctx, agentId);
-    if (healthState) {
-      healthState.lastRunAt = event.occurredAt;
-      healthState.runCounts = counts;
-      await setAgentHealthState(ctx, agentId, healthState);
-    }
+      const healthState = await getAgentHealthState(ctx, agentId);
+      if (healthState) {
+        healthState.lastRunAt = event.occurredAt;
+        healthState.runCounts = counts;
+        await setAgentHealthState(ctx, agentId, healthState);
+      }
+    });
 
     ctx.streams.emit(STREAM_CHANNELS.fleetStatus, {
       type: "run-finished",
@@ -366,16 +360,18 @@ function registerEventHandlers(ctx: PluginContext): void {
       error: payload.error,
     });
 
-    const counts = await getRunCounts(ctx, agentId);
-    counts.failed++;
-    await setRunCounts(ctx, agentId, counts);
+    await withAgentLock(agentId, async () => {
+      const counts = await getRunCounts(ctx, agentId);
+      counts.failed++;
+      await setRunCounts(ctx, agentId, counts);
 
-    const healthState = await getAgentHealthState(ctx, agentId);
-    if (healthState) {
-      healthState.lastRunAt = event.occurredAt;
-      healthState.runCounts = counts;
-      await setAgentHealthState(ctx, agentId, healthState);
-    }
+      const healthState = await getAgentHealthState(ctx, agentId);
+      if (healthState) {
+        healthState.lastRunAt = event.occurredAt;
+        healthState.runCounts = counts;
+        await setAgentHealthState(ctx, agentId, healthState);
+      }
+    });
 
     ctx.streams.emit(STREAM_CHANNELS.fleetStatus, {
       type: "run-failed",
@@ -533,6 +529,11 @@ function registerActionHandlers(ctx: PluginContext): void {
     const prompt = requireParam(params, "prompt");
     const reason = typeof params.reason === "string" ? params.reason : undefined;
 
+    const MAX_PROMPT_LENGTH = 10000;
+    if (prompt.length > MAX_PROMPT_LENGTH) {
+      throw new Error(`prompt exceeds maximum length of ${MAX_PROMPT_LENGTH} characters`);
+    }
+
     ctx.logger.info("Invoking agent", { agentId, companyId, reason });
 
     const { runId } = await ctx.agents.invoke(agentId, companyId, { prompt, reason });
@@ -636,17 +637,6 @@ const plugin: PaperclipPlugin = definePlugin({
   },
 
   async onShutdown() {
-    if (currentContext) {
-      for (const channel of openStreams) {
-        try {
-          currentContext.streams.close(channel);
-        } catch {
-          // Best-effort cleanup
-        }
-      }
-      openStreams.clear();
-    }
-
     currentContext = null;
   },
 });

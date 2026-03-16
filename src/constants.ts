@@ -19,7 +19,7 @@ export const JOB_KEYS = {
 } as const;
 
 export const STREAM_CHANNELS = {
-  fleetStatus: "fleet-status",
+  fleetStatus: "tortuga:fleet-status",
 } as const;
 
 export const DATA_KEYS = {
@@ -34,9 +34,12 @@ export const ACTION_KEYS = {
 } as const;
 
 export const STATE_KEYS = {
-  agentHealth: "agent-health",
+  /** Per-agent health snapshot: status, lastHeartbeat, run counts */
+  agentHealth: "health",
+  /** Instance-level: last fleet health check timestamp */
   lastHealthCheck: "last-health-check",
-  runCount: "run-count",
-  lastRunAt: "last-run-at",
-  failureCount: "failure-count",
+  /** Per-agent last-run timestamp */
+  lastRun: "last-run",
+  /** Per-agent run counters: started, completed, failed */
+  runCounts: "run-counts",
 } as const;
