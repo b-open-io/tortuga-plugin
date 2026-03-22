@@ -147,6 +147,7 @@ type FleetAgent = {
   spentMonthlyCents: number;
   runCounts: { started: number; completed: number; failed: number };
   lastRunAt: string | null;
+  hasExecutionIssues: boolean;
 };
 
 type FleetOverview = {
@@ -183,6 +184,12 @@ type AgentDetailData = {
   lastCheckedAt: string | null;
   createdAt: string | null;
   updatedAt: string | null;
+  lastWakeupRequest: {
+    runId: string;
+    source: string;
+    reason: string | null;
+    requestedAt: string;
+  } | null;
 };
 
 type FleetStatusEvent = {
@@ -194,6 +201,19 @@ type FleetStatusEvent = {
   currentStatus?: AgentStatus;
   health?: string;
   occurredAt: string;
+};
+
+type RoutineExecutionIssueSummary = {
+  issueId: string;
+  issueTitle: string;
+  issueStatus: string;
+  originId: string | null;
+  updatedAt: string | null;
+};
+
+type AgentRoutinesData = {
+  executionIssues: RoutineExecutionIssueSummary[];
+  available: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -743,6 +763,9 @@ function AgentRow({
           </span>
           {agent.role ? <Pill label={agent.role} /> : null}
           {agent.title ? <Pill label={agent.title} color="#6366f1" /> : null}
+          {agent.hasExecutionIssues ? (
+            <Pill label="Exec Issues" color="#f59e0b" />
+          ) : null}
         </div>
         <div style={mutedTextStyle}>
           Last heartbeat: {relativeTime(agent.lastHeartbeatAt)}
@@ -792,6 +815,61 @@ function AgentRow({
   );
 }
 
+const ISSUE_STATUS_COLORS: Record<string, string> = {
+  open: "#2563eb",
+  in_progress: "#d97706",
+  done: "#16a34a",
+  cancelled: "#6b7280",
+};
+
+function ExecutionIssuesSection({
+  issues,
+}: {
+  issues: RoutineExecutionIssueSummary[];
+}) {
+  if (issues.length === 0) return null;
+
+  return (
+    <Section title="Execution Issues">
+      <div style={{ display: "grid", gap: "6px" }}>
+        {issues.map((issue) => (
+          <div
+            key={issue.issueId}
+            style={{
+              ...subtleCardStyle,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "8px",
+            }}
+          >
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div
+                style={{
+                  fontSize: "13px",
+                  fontWeight: 500,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {issue.issueTitle}
+              </div>
+              <div style={mutedTextStyle}>
+                {issue.updatedAt ? relativeTime(issue.updatedAt) : "unknown"}
+              </div>
+            </div>
+            <Pill
+              label={issue.issueStatus.replace(/_/g, " ")}
+              color={ISSUE_STATUS_COLORS[issue.issueStatus] ?? "#6b7280"}
+            />
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
 function AgentDetailPanel({
   agentId,
   companyId,
@@ -813,6 +891,10 @@ function AgentDetailPanel({
   );
   const { data: detail, loading, error } = usePluginData<AgentDetailData>(
     "agent-detail",
+    detailParams,
+  );
+  const { data: routinesData } = usePluginData<AgentRoutinesData>(
+    "agent-routines",
     detailParams,
   );
 
@@ -951,6 +1033,9 @@ function AgentDetailPanel({
           </button>
         </div>
       </Section>
+
+      {/* Execution Issues — routine-generated issues assigned to this agent */}
+      <ExecutionIssuesSection issues={routinesData?.executionIssues ?? []} />
     </div>
   );
 }

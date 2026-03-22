@@ -26,6 +26,7 @@ export const STREAM_CHANNELS = {
 export const DATA_KEYS = {
   fleetOverview: "fleet-overview",
   agentDetail: "agent-detail",
+  agentRoutines: "agent-routines",
 } as const;
 
 export const ACTION_KEYS = {
@@ -41,4 +42,8 @@ export const STATE_KEYS = {
   lastHealthCheck: "last-health-check",
   /** Per-agent run counters: started, completed, failed */
   runCounts: "run-counts",
+  /** Per-agent: metadata from the most recent wakeup/invoke request */
+  lastWakeupRequest: "last-wakeup-request",
+  /** Per-agent: routine-execution issues assigned to this agent */
+  routineExecutionIssues: "routine-execution-issues",
 } as const;

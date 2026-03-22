@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.0.11
+
+### Added
+- Routine issue tracking: fleet health check indexes routine-execution issues per agent
+- Execution issue indicators in fleet monitor agent rows
+- Execution issues section in agent detail panel
+- `agent-routines` data handler for routine execution issue data
+- Heartbeat wakeup integration: `invokeAgent` persists wakeup metadata and emits stream event
+- `issues.read` capability for execution issue queries
+- `lastWakeupRequest` in agent detail data
+
+### Changed
+- `agent.run.finished`/`agent.run.failed` stream events include `invocationSource` and `triggerDetail`
+- Fleet overview includes `hasExecutionIssues` flag per agent
+
 ## 0.0.8
 
 ### Fixed

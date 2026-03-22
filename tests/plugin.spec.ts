@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import { createTestHarness, type TestHarness } from "@paperclipai/plugin-sdk/testing";
 import type { Agent } from "@paperclipai/shared";
 import manifest from "../src/manifest.js";
@@ -197,6 +197,42 @@ describe("Tortuga event handlers", () => {
       }) as any;
 
       expect(counts.completed).toBe(1);
+    });
+
+    it("includes invocationSource in stream event when present", async () => {
+      const emitSpy = vi.spyOn(harness.ctx.streams, "emit");
+
+      await harness.emit(
+        "agent.run.finished",
+        { runId: "run_1", invocationSource: "scheduled-routine", triggerDetail: "daily-standup" },
+        { entityId: "agent_1", entityType: "agent", companyId: COMPANY_ID },
+      );
+
+      const call = emitSpy.mock.calls.find(
+        ([, evt]: [string, any]) => evt.type === "run-finished",
+      );
+      expect(call).toBeDefined();
+      const emitted = call![1] as Record<string, unknown>;
+      expect(emitted.invocationSource).toBe("scheduled-routine");
+      expect(emitted.triggerDetail).toBe("daily-standup");
+    });
+
+    it("defaults invocationSource and triggerDetail to null when absent", async () => {
+      const emitSpy = vi.spyOn(harness.ctx.streams, "emit");
+
+      await harness.emit(
+        "agent.run.finished",
+        { runId: "run_2" },
+        { entityId: "agent_1", entityType: "agent", companyId: COMPANY_ID },
+      );
+
+      const call = emitSpy.mock.calls.find(
+        ([, evt]: [string, any]) => evt.type === "run-finished" && evt.runId === "run_2",
+      );
+      expect(call).toBeDefined();
+      const emitted = call![1] as Record<string, unknown>;
+      expect(emitted.invocationSource).toBeNull();
+      expect(emitted.triggerDetail).toBeNull();
     });
   });
 
@@ -443,6 +479,49 @@ describe("Tortuga data handlers", () => {
       ).rejects.toThrow("companyId is required");
     });
 
+    it("includes lastWakeupRequest when wakeup metadata exists", async () => {
+      const harness = makeHarness();
+      seedCompanyAndAgents(harness, [
+        makeAgent({ id: "agent_1", status: "idle" }),
+      ]);
+      await setupPlugin(harness);
+
+      // Invoke the agent to create wakeup metadata
+      await harness.performAction("invoke-agent", {
+        agentId: "agent_1",
+        companyId: COMPANY_ID,
+        prompt: "Wake up",
+        reason: "Scheduled routine",
+        source: "cron-trigger",
+      });
+
+      const detail = await harness.getData<any>("agent-detail", {
+        agentId: "agent_1",
+        companyId: COMPANY_ID,
+      });
+
+      expect(detail.lastWakeupRequest).toBeDefined();
+      expect(detail.lastWakeupRequest.source).toBe("cron-trigger");
+      expect(detail.lastWakeupRequest.reason).toBe("Scheduled routine");
+      expect(detail.lastWakeupRequest.runId).toBeDefined();
+      expect(detail.lastWakeupRequest.requestedAt).toBeDefined();
+    });
+
+    it("returns null lastWakeupRequest when no wakeup has occurred", async () => {
+      const harness = makeHarness();
+      seedCompanyAndAgents(harness, [
+        makeAgent({ id: "agent_1", status: "idle" }),
+      ]);
+      await setupPlugin(harness);
+
+      const detail = await harness.getData<any>("agent-detail", {
+        agentId: "agent_1",
+        companyId: COMPANY_ID,
+      });
+
+      expect(detail.lastWakeupRequest).toBeNull();
+    });
+
     it("includes run counts from prior events when health state exists", async () => {
       const harness = makeHarness();
       seedCompanyAndAgents(harness, [makeAgent({ id: "agent_1" })]);
@@ -630,6 +709,70 @@ describe("Tortuga action handlers", () => {
         }),
       ).rejects.toThrow("not invokable");
     });
+
+    it("persists wakeup metadata and emits stream event", async () => {
+      const harness = makeHarness();
+      seedCompanyAndAgents(harness, [
+        makeAgent({ id: "agent_1", status: "idle" }),
+      ]);
+      await setupPlugin(harness);
+
+      const emitSpy = vi.spyOn(harness.ctx.streams, "emit");
+
+      const result = await harness.performAction<any>("invoke-agent", {
+        agentId: "agent_1",
+        companyId: COMPANY_ID,
+        prompt: "Run diagnostics",
+        reason: "Fleet check",
+        source: "routine-scheduler",
+      });
+
+      // Verify wakeup metadata was persisted
+      const wakeup = harness.getState({
+        scopeKind: "agent",
+        scopeId: "agent_1",
+        stateKey: "last-wakeup-request",
+      }) as any;
+
+      expect(wakeup).toBeDefined();
+      expect(wakeup.runId).toBe(result.runId);
+      expect(wakeup.source).toBe("routine-scheduler");
+      expect(wakeup.reason).toBe("Fleet check");
+      expect(wakeup.requestedAt).toBeDefined();
+
+      // Verify stream event was emitted
+      const call = emitSpy.mock.calls.find(
+        ([, evt]: [string, any]) => evt.type === "agent-wakeup-requested",
+      );
+      expect(call).toBeDefined();
+      const [, emitted] = call! as [string, any];
+      expect(emitted.agentId).toBe("agent_1");
+      expect(emitted.runId).toBe(result.runId);
+      expect(emitted.source).toBe("routine-scheduler");
+    });
+
+    it("defaults source to 'manual fleet invoke' when not provided", async () => {
+      const harness = makeHarness();
+      seedCompanyAndAgents(harness, [
+        makeAgent({ id: "agent_1", status: "idle" }),
+      ]);
+      await setupPlugin(harness);
+
+      await harness.performAction<any>("invoke-agent", {
+        agentId: "agent_1",
+        companyId: COMPANY_ID,
+        prompt: "Quick check",
+      });
+
+      const wakeup = harness.getState({
+        scopeKind: "agent",
+        scopeId: "agent_1",
+        stateKey: "last-wakeup-request",
+      }) as any;
+
+      expect(wakeup.source).toBe("manual fleet invoke");
+      expect(wakeup.reason).toBeNull();
+    });
   });
 });
 
@@ -785,6 +928,7 @@ describe("Tortuga manifest", () => {
     expect(manifest.capabilities).toContain("agents.invoke");
     expect(manifest.capabilities).toContain("events.subscribe");
     expect(manifest.capabilities).toContain("jobs.schedule");
+    expect(manifest.capabilities).toContain("issues.read");
     expect(manifest.capabilities).toContain("plugin.state.read");
     expect(manifest.capabilities).toContain("plugin.state.write");
   });

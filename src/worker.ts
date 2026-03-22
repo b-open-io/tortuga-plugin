@@ -42,6 +42,14 @@ type FleetHealthCheckResult = {
   error: number;
 };
 
+type RoutineExecutionIssueSummary = {
+  issueId: string;
+  issueTitle: string;
+  issueStatus: string;
+  originId: string | null;
+  updatedAt: string | null;
+};
+
 // ---------------------------------------------------------------------------
 // Module-level state
 // ---------------------------------------------------------------------------
@@ -172,6 +180,34 @@ async function performFleetHealthCheck(ctx: PluginContext): Promise<FleetHealthC
     }
 
     await setAgentHealthState(ctx, agent.id, newState);
+
+    // Index routine-execution issues for this agent
+    const agentIssues = await ctx.issues.list({
+      companyId: agent.companyId,
+      assigneeAgentId: agent.id,
+      limit: 20,
+    });
+    const routineIssues = agentIssues.filter(
+      (i) => i.originKind === "routine_execution",
+    );
+    if (routineIssues.length > 0) {
+      await ctx.state.set(
+        { scopeKind: "agent", scopeId: agent.id, stateKey: STATE_KEYS.routineExecutionIssues },
+        routineIssues.map((i) => ({
+          issueId: i.id,
+          issueTitle: i.title,
+          issueStatus: i.status,
+          originId: i.originId ?? null,
+          updatedAt: i.updatedAt ? new Date(i.updatedAt).toISOString() : null,
+        })),
+      );
+    } else {
+      // Clear stale state when no routine issues remain
+      await ctx.state.set(
+        { scopeKind: "agent", scopeId: agent.id, stateKey: STATE_KEYS.routineExecutionIssues },
+        [],
+      );
+    }
 
     switch (health) {
       case "healthy": healthy++; break;
@@ -343,7 +379,9 @@ function registerEventHandlers(ctx: PluginContext): void {
       type: "run-finished",
       agentId,
       companyId: event.companyId,
-      runId: payload.runId,
+      runId: payload.runId ?? null,
+      invocationSource: payload.invocationSource ?? null,
+      triggerDetail: payload.triggerDetail ?? null,
       occurredAt: event.occurredAt,
     });
   });
@@ -377,7 +415,9 @@ function registerEventHandlers(ctx: PluginContext): void {
       type: "run-failed",
       agentId,
       companyId: event.companyId,
-      runId: payload.runId,
+      runId: payload.runId ?? null,
+      invocationSource: payload.invocationSource ?? null,
+      triggerDetail: payload.triggerDetail ?? null,
       error: payload.error ?? null,
       occurredAt: event.occurredAt,
     });
@@ -400,6 +440,12 @@ function registerDataHandlers(ctx: PluginContext): void {
         const healthState = await getAgentHealthState(ctx, agent.id);
         const health = classifyHealth(agent);
 
+        const executionIssues = await ctx.state.get({
+          scopeKind: "agent",
+          scopeId: agent.id,
+          stateKey: STATE_KEYS.routineExecutionIssues,
+        }) as RoutineExecutionIssueSummary[] | null;
+
         return {
           id: agent.id,
           name: agent.name,
@@ -415,6 +461,7 @@ function registerDataHandlers(ctx: PluginContext): void {
           spentMonthlyCents: agent.spentMonthlyCents,
           runCounts: healthState?.runCounts ?? { started: 0, completed: 0, failed: 0 },
           lastRunAt: healthState?.lastRunAt ?? null,
+          hasExecutionIssues: Array.isArray(executionIssues) && executionIssues.length > 0,
         };
       }),
     );
@@ -447,6 +494,23 @@ function registerDataHandlers(ctx: PluginContext): void {
     };
   });
 
+  // Agent routine-execution issues from persisted state
+  ctx.data.register(DATA_KEYS.agentRoutines, async (params) => {
+    const agentId = requireParam(params, "agentId");
+    requireParam(params, "companyId");
+
+    const executionIssues = await ctx.state.get({
+      scopeKind: "agent",
+      scopeId: agentId,
+      stateKey: STATE_KEYS.routineExecutionIssues,
+    }) as RoutineExecutionIssueSummary[] | null;
+
+    return {
+      executionIssues: executionIssues ?? [],
+      available: true,
+    };
+  });
+
   // Single agent detail with recent run history from state
   ctx.data.register(DATA_KEYS.agentDetail, async (params) => {
     const agentId = requireParam(params, "agentId");
@@ -459,6 +523,12 @@ function registerDataHandlers(ctx: PluginContext): void {
 
     const healthState = await getAgentHealthState(ctx, agentId);
     const health = classifyHealth(agent);
+
+    const lastWakeupRequest = await ctx.state.get({
+      scopeKind: "agent",
+      scopeId: agentId,
+      stateKey: STATE_KEYS.lastWakeupRequest,
+    }) as { runId: string; source: string; reason: string | null; requestedAt: string } | null;
 
     return {
       id: agent.id,
@@ -479,6 +549,7 @@ function registerDataHandlers(ctx: PluginContext): void {
       runCounts: healthState?.runCounts ?? { started: 0, completed: 0, failed: 0 },
       lastRunAt: healthState?.lastRunAt ?? null,
       lastCheckedAt: healthState?.lastCheckedAt ?? null,
+      lastWakeupRequest: lastWakeupRequest ?? null,
       createdAt: agent.createdAt ? new Date(agent.createdAt).toISOString() : null,
       updatedAt: agent.updatedAt ? new Date(agent.updatedAt).toISOString() : null,
     };
@@ -528,15 +599,33 @@ function registerActionHandlers(ctx: PluginContext): void {
     const companyId = requireParam(params, "companyId");
     const prompt = requireParam(params, "prompt");
     const reason = typeof params.reason === "string" ? params.reason : undefined;
+    const source = typeof params.source === "string" ? params.source : "manual fleet invoke";
 
     const MAX_PROMPT_LENGTH = 10000;
     if (prompt.length > MAX_PROMPT_LENGTH) {
       throw new Error(`prompt exceeds maximum length of ${MAX_PROMPT_LENGTH} characters`);
     }
 
-    ctx.logger.info("Invoking agent", { agentId, companyId, reason });
+    ctx.logger.info("Invoking agent", { agentId, companyId, reason, source });
 
     const { runId } = await ctx.agents.invoke(agentId, companyId, { prompt, reason });
+
+    // Persist wakeup metadata for agent-detail lookups
+    await ctx.state.set(
+      { scopeKind: "agent", scopeId: agentId, stateKey: STATE_KEYS.lastWakeupRequest },
+      { runId, source, reason: reason ?? null, requestedAt: new Date().toISOString() },
+    );
+
+    // Notify UI of the wakeup request
+    ctx.streams.emit(STREAM_CHANNELS.fleetStatus, {
+      type: "agent-wakeup-requested",
+      agentId,
+      companyId,
+      runId,
+      source,
+      occurredAt: new Date().toISOString(),
+    });
+
     return {
       ok: true,
       agentId,
